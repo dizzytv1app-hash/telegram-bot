@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 # ==================== CONFIG ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8947239424:AAH6pPt-9JrpjhUytDk55e0ty48-KXyoEk0")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8947239424:AAFqwmLp5ICjDsQ9VeCvteGXW26C_J2P-XQ")
 ADMIN_ID = 6222096713
 ADMIN_USERNAME = "@Reyimberganov_i"
 CHANNEL_USERNAME = "@animelar_iqo"
