@@ -1142,10 +1142,18 @@ async def add_episode_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not animes:
         await update.message.reply_text("❌ Hali anime qo'shilmagan!")
         return ConversationHandler.END
+    incomplete = []
+    for code, name, year, genre, total_ep in animes:
+        added = len(get_episodes_list(code))
+        if added < total_ep:
+            incomplete.append((code, name, added, total_ep))
+    if not incomplete:
+        await update.message.reply_text("✅ Barcha animelarga e'lon qilingan qismlar to'liq qo'shilgan!")
+        return ConversationHandler.END
     context.user_data.clear()
-    lines = "\n".join(f"*{a[0]}* — {_esc_md(a[1])} ({a[2]})" for a in animes)
+    lines = "\n".join(f"*{code}* — {_esc_md(name)} ({added}/{total_ep})" for code, name, added, total_ep in incomplete)
     await update.message.reply_text(
-        f"📺 *Qism qo'shish*\n\nMavjud animeler:\n{lines}\n\n1️⃣ Anime kodini yuboring:",
+        f"📺 *Qism qo'shish*\n\nQismi to'liq bo'lmagan animeler:\n{lines}\n\n1️⃣ Anime kodini yuboring:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
