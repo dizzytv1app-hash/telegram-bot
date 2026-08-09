@@ -149,30 +149,6 @@ def init_db():
             joined_date TEXT
         )
     """)
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
-    except sqlite3.OperationalError:
-        pass  # ustun allaqachon mavjud
-    # Foydalanuvchi faolligi (har bir murojaat/so'rov) va anime so'rovlari statistikasi uchun
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS activity_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            activity_date TEXT,
-            created_at TEXT
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS anime_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            anime_code INTEGER,
-            user_id INTEGER,
-            requested_at TEXT
-        )
-    """)
-    c.execute("CREATE INDEX IF NOT EXISTS idx_activity_date ON activity_log(activity_date)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log(user_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_requests_code ON anime_requests(anime_code)")
     c.execute("""
         CREATE TABLE IF NOT EXISTS required_channels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -510,15 +486,6 @@ def delete_anime(code):
         c.execute("DELETE FROM episodes WHERE season_id=?", (sid,))
     conn.commit()
 
-def delete_season(season_id):
-    """Faqat bitta faslni (va shu fasldagi barcha qismlarni) o'chiradi, animening o'zi va
-    qolgan fasllari tegilmay qoladi."""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM episodes WHERE season_id=?", (season_id,))
-    c.execute("DELETE FROM seasons WHERE id=?", (season_id,))
-    conn.commit()
-
 def delete_episode(season_id, episode_num):
     conn = get_db()
     c = conn.cursor()
@@ -579,17 +546,13 @@ def get_required_channels():
     result = c.fetchall()
     return result
 
-def register_user(user_id, username, first_name=None):
+def register_user(user_id, username):
     conn = get_db()
     c = conn.cursor()
     c.execute("""
-        INSERT OR IGNORE INTO users (id, username, joined_date, first_name)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, username or "", datetime.now().strftime("%Y-%m-%d"), first_name or ""))
-    c.execute(
-        "UPDATE users SET username=?, first_name=? WHERE id=?",
-        (username or "", first_name or "", user_id)
-    )
+        INSERT OR IGNORE INTO users (id, username, joined_date)
+        VALUES (?, ?, ?)
+    """, (user_id, username or "", datetime.now().strftime("%Y-%m-%d")))
     conn.commit()
 
 def get_all_users():
@@ -598,69 +561,6 @@ def get_all_users():
     c.execute("SELECT id FROM users")
     rows = c.fetchall()
     return [r[0] for r in rows]
-
-def log_activity(user_id, username=None, first_name=None):
-    """Foydalanuvchining botga har bir murojaati (matn/tugma) shu yerda qayd etiladi —
-    'Eng faol kun' va 'Eng faol foydalanuvchilar' statistikasi shu yozuvlar asosida hisoblanadi."""
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now()
-    c.execute(
-        "INSERT INTO activity_log (user_id, activity_date, created_at) VALUES (?, ?, ?)",
-        (user_id, now.strftime("%Y-%m-%d"), now.isoformat())
-    )
-    c.execute(
-        "INSERT OR IGNORE INTO users (id, username, joined_date, first_name) VALUES (?, ?, ?, ?)",
-        (user_id, username or "", now.strftime("%Y-%m-%d"), first_name or "")
-    )
-    if username is not None or first_name is not None:
-        c.execute(
-            "UPDATE users SET username=COALESCE(NULLIF(?, ''), username), "
-            "first_name=COALESCE(NULLIF(?, ''), first_name) WHERE id=?",
-            (username or "", first_name or "", user_id)
-        )
-    conn.commit()
-
-def log_anime_request(anime_code, user_id):
-    """Foydalanuvchi biror anime ma'lumotini so'raganida (kod/nom orqali yoki chuqur havola bilan) qayd etiladi."""
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO anime_requests (anime_code, user_id, requested_at) VALUES (?, ?, ?)",
-        (anime_code, user_id, datetime.now().isoformat())
-    )
-    conn.commit()
-
-def get_most_active_day():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT activity_date, COUNT(*) AS cnt FROM activity_log "
-        "GROUP BY activity_date ORDER BY cnt DESC LIMIT 1"
-    )
-    return c.fetchone()
-
-def get_top_active_users(limit=10):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT a.user_id, COUNT(*) AS cnt, u.username, u.first_name "
-        "FROM activity_log a LEFT JOIN users u ON u.id = a.user_id "
-        "GROUP BY a.user_id ORDER BY cnt DESC LIMIT ?",
-        (limit,)
-    )
-    return c.fetchall()
-
-def get_top_requested_animes(limit=10):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT r.anime_code, COUNT(*) AS cnt, a.name "
-        "FROM anime_requests r LEFT JOIN animes a ON a.code = r.anime_code "
-        "GROUP BY r.anime_code ORDER BY cnt DESC LIMIT ?",
-        (limit,)
-    )
-    return c.fetchall()
 
 def add_admin(user_id, added_by):
     conn = get_db()
@@ -944,7 +844,6 @@ async def send_anime_info(bot, chat_id, code):
     if not anime:
         await bot.send_message(chat_id=chat_id, text="❌ Bunday kodli anime topilmadi!")
         return
-    log_anime_request(code, chat_id)
     _, code, name, year, genre, total_ep, desc, poster_id, added_date, *_rest = anime
     status_key = get_anime_status(code)
     seasons = get_seasons(code)
@@ -1029,14 +928,6 @@ async def post_anime_to_channel(context, code, name, genre, total_episodes, post
 
 # ==================== HANDLERS ====================
 
-async def log_user_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Har qanday xabar yoki tugma bosilishini (foydalanuvchining botga murojaati) qayd etadi.
-    Alohida (past ustuvorlikdagi) handler guruhida ishlaydi, shu sababli boshqa handlerlar/
-    ConversationHandler oqimiga hech qanday ta'sir qilmaydi."""
-    user = update.effective_user
-    if user:
-        log_activity(user.id, user.username, user.first_name)
-
 async def require_subscription(update, context, pending_code=None):
     """Obunani faqat foydalanuvchi botdan haqiqatan foydalanmoqchi bo'lganda (kod yuborganda
     yoki anime linki orqali kirganda) tekshiradi. Admin uchun har doim True qaytaradi.
@@ -1059,7 +950,7 @@ async def require_subscription(update, context, pending_code=None):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    register_user(user.id, user.username, user.first_name)
+    register_user(user.id, user.username)
 
     deep_code = None
     if context.args and context.args[0].isdigit():
@@ -1661,14 +1552,98 @@ async def admin_new_episode_channel_send(update: Update, context: ContextTypes.D
         return
     name, count, total_ep, ep_label = grouped[key]
     await query.answer()
-    context.user_data["awaiting_episode_poster"] = {
-        "code": code, "season_num": season_num, "count": count,
-        "total_ep": total_ep, "ep_label": ep_label, "name": name,
-    }
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Ha", callback_data=f"annepimg_yes_{code}_{season_num}"),
+        InlineKeyboardButton("❌ Yo'q", callback_data=f"annepimg_no_{code}_{season_num}"),
+    ]])
     await query.message.reply_text(
-        f"🖼 *{_esc_md(name)}* — {season_num}-fasl uchun kanalga yuboriladigan rasm yoki video yuboring:",
+        f"🖼 *{_esc_md(name)}* — {season_num}-fasl uchun rasm/video yubormoqchimisiz?\n"
+        f"_(\"Yo'q\" desangiz, shu faslning saqlangan posteri bilan yuboriladi)_",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+async def admin_new_episode_image_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    # callback_data: annepimg_yes_{code}_{season_num} yoki annepimg_no_{code}_{season_num}
+    _, choice, code_str, season_num_str = query.data.split("_")
+    code, season_num = int(code_str), int(season_num_str)
+    grouped = {(c, sn): (name, count, total_ep, ep_label) for c, name, sn, count, total_ep, ep_label in get_recent_episode_counts(hours=36)}
+    key = (code, season_num)
+    if key not in grouped:
+        await query.answer("❌ Bu anime endi ro'yxatda yo'q (36 soat o'tgan bo'lishi mumkin).", show_alert=True)
+        return
+    name, count, total_ep, ep_label = grouped[key]
+    await query.answer()
+
+    if choice == "yes":
+        context.user_data["awaiting_episode_poster"] = {
+            "code": code, "season_num": season_num, "count": count,
+            "total_ep": total_ep, "ep_label": ep_label, "name": name,
+        }
+        await query.message.edit_text(
+            f"🖼 *{_esc_md(name)}* — {season_num}-fasl uchun kanalga yuboriladigan rasm yoki video yuboring:",
+            parse_mode="Markdown"
+        )
+        return
+
+    # choice == "no" — faslning saqlangan posteri bilan darhol yuboriladi
+    season = get_season(code, season_num)
+    if not season or not season[2]:
+        await query.message.edit_text(
+            f"⚠️ *{_esc_md(name)}* — {season_num}-fasl uchun saqlangan poster topilmadi. "
+            f"Iltimos rasm yoki video yuboring.",
+            parse_mode="Markdown"
+        )
+        context.user_data["awaiting_episode_poster"] = {
+            "code": code, "season_num": season_num, "count": count,
+            "total_ep": total_ep, "ep_label": ep_label, "name": name,
+        }
+        return
+    season_id, poster_id, poster_type = season[0], season[2], season[4]
+    await query.message.edit_text(
+        f"⏳ *{_esc_md(name)}* — {season_num}-fasl saqlangan poster bilan kanalga yuborilmoqda...",
         parse_mode="Markdown"
     )
+    ok, err = await _send_new_episode_to_channel(context.bot, code, season_id, poster_id, poster_type, name)
+    if ok:
+        await query.message.reply_text(
+            f"✅ Kanalga yuborildi: *{_esc_md(name)}* — {count} ta yangi qism.",
+            parse_mode="Markdown"
+        )
+    else:
+        logger.warning(f"Kanalga yangi qism xabarini yuborishda xato: {err}")
+        await query.message.reply_text(f"❌ Kanalga yuborilmadi: {err}")
+
+async def _send_new_episode_to_channel(bot, code, season_id, poster_id, poster_type, name):
+    """Kanalga 'yangi qism' postini yuboradi. Qismlar soni sifatida faslga
+    haqiqatan yuklangan (bazadagi) qismlar soni ko'rsatiladi, e'lon qilingan
+    umumiy son emas."""
+    watch_url = f"https://t.me/{BOT_USERNAME}?start={code}"
+    uploaded_count = len(get_episodes_list(season_id))
+    caption = (
+        f"🆕 *Yangi qism qo'shildi!*\n\n"
+        f"🎬 {_esc_md(name)}\n"
+        f"📺 Qism: {uploaded_count}"
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("💥 Tomosha qilish 💥", url=watch_url)]])
+    try:
+        if poster_type == "video":
+            await bot.send_video(
+                chat_id=CHANNEL_USERNAME, video=poster_id,
+                caption=caption, parse_mode="Markdown", reply_markup=kb
+            )
+        else:
+            await bot.send_photo(
+                chat_id=CHANNEL_USERNAME, photo=poster_id,
+                caption=caption, parse_mode="Markdown", reply_markup=kb
+            )
+        return True, None
+    except Exception as e:
+        return False, e
 
 async def got_episode_channel_poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info = context.user_data.get("awaiting_episode_poster")
@@ -1687,35 +1662,22 @@ async def got_episode_channel_poster(update: Update, context: ContextTypes.DEFAU
     code = info["code"]
     season_num = info["season_num"]
     count = info["count"]
-    total_ep = info["total_ep"]
-    ep_label = info.get("ep_label")
     name = info["name"]
-    watch_url = f"https://t.me/{BOT_USERNAME}?start={code}"
-    ep_display = _episode_label(total_ep, ep_label)
-    caption = (
-        f"🆕 *Yangi qism qo'shildi!*\n\n"
-        f"🎬 {_esc_md(name)}\n"
-        f"📺 Qism: {ep_display}"
-    )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("💥 Tomosha qilish 💥", url=watch_url)]])
-    try:
-        if poster_type == "video":
-            await context.bot.send_video(
-                chat_id=CHANNEL_USERNAME, video=poster_id,
-                caption=caption, parse_mode="Markdown", reply_markup=kb
-            )
-        else:
-            await context.bot.send_photo(
-                chat_id=CHANNEL_USERNAME, photo=poster_id,
-                caption=caption, parse_mode="Markdown", reply_markup=kb
-            )
+    season = get_season(code, season_num)
+    if not season:
+        await update.message.reply_text("❌ Bu fasl endi topilmadi.")
+        return
+    season_id = season[0]
+    ok, err = await _send_new_episode_to_channel(context.bot, code, season_id, poster_id, poster_type, name)
+    if ok:
         await update.message.reply_text(
             f"✅ Kanalga yuborildi: *{_esc_md(name)}* — {count} ta yangi qism.",
             parse_mode="Markdown"
         )
-    except Exception as e:
-        logger.warning(f"Kanalga yangi qism xabarini yuborishda xato: {e}")
-        await update.message.reply_text(f"❌ Kanalga yuborilmadi: {e}")
+    else:
+        logger.warning(f"Kanalga yangi qism xabarini yuborishda xato: {err}")
+        await update.message.reply_text(f"❌ Kanalga yuborilmadi: {err}")
+
 
 async def done_episodes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """'✅ Hozircha tugatish' bosilganda — avval tasdiqlash so'raladi."""
@@ -1766,13 +1728,11 @@ async def epm_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Hali anime qo'shilmagan!")
         return ConversationHandler.END
     context.user_data.clear()
-    # Anime soni ko'p bo'lsa, ro'yxat Telegramning 4096 belgi chegarasidan oshib ketishi
-    # mumkin edi — shu sababli bir nechta xabarga bo'lib yuboriladi (delete_anime_start
-    # dagi kabi).
     header = "🛠 *Qism boshqarish*\n\nMavjud animeler:\n"
     chunk = header
     for a in animes:
         line = f"*{a[0]}* — {_esc_md(a[1])}\n"
+        # Telegram xabar chegarasi (4096 belgi) dan oshib ketmasligi uchun bo'laklarga bo'lib yuboramiz
         if len(chunk) + len(line) > 3500:
             await update.message.reply_text(chunk, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
             chunk = ""
@@ -2199,63 +2159,18 @@ async def got_delete_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Bunday anime topilmadi! Kodini qayta yuboring:")
         return WAIT_DELETE_CODE
     context.user_data["delete_code"] = code
-
-    seasons = get_seasons(code)
-    buttons = [[InlineKeyboardButton("🗑 Butun animeni o'chirish", callback_data="delconfirm_yes")]]
-    if len(seasons) > 1:
-        for sid, snum, *_rest in seasons:
-            buttons.append([InlineKeyboardButton(
-                f"🗑 Faqat {snum}-faslni o'chirish", callback_data=f"delseason_{sid}"
-            )])
-    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="delconfirm_no")])
-
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Ha, o'chirish", callback_data="delconfirm_yes"),
+         InlineKeyboardButton("❌ Yo'q", callback_data="delconfirm_no")]
+    ])
     await update.message.reply_text(
-        f"❗️ *Nimani o'chirmoqchisiz?*\n\n"
+        f"❗️ *Rostdan ham o'chirmoqchimisiz?*\n\n"
         f"📌 Kod: *{anime[1]}*\n"
         f"🎬 Nom: {_esc_md(anime[2])}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return WAIT_DELETE_CONFIRM
-
-async def delete_season_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    season_id = int(query.data.split("_")[1])
-    season = get_season_by_id(season_id)
-    if not season:
-        await query.edit_message_text("❌ Bu fasl endi topilmadi.")
-        await query.message.reply_text("👑 Admin paneli:", reply_markup=admin_menu_keyboard(update.effective_user.id))
-        return ConversationHandler.END
-    _, anime_code, season_num, *_rest = season
-    context.user_data["delete_season_id"] = season_id
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Ha, o'chirish", callback_data=f"delseasonyes_{season_id}"),
-        InlineKeyboardButton("❌ Yo'q", callback_data="delconfirm_no"),
-    ]])
-    await query.edit_message_text(
-        f"❗️ Rostdan ham *{season_num}-faslni* butunlay o'chirmoqchimisiz?\n"
-        f"_(Bu fasldagi barcha qismlar ham birga o'chadi, animening o'zi va boshqa fasllar qoladi)_",
         parse_mode="Markdown",
         reply_markup=kb
     )
     return WAIT_DELETE_CONFIRM
-
-async def delete_season_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    season_id = int(query.data.split("_")[1])
-    season = get_season_by_id(season_id)
-    context.user_data.clear()
-    if not season:
-        await query.edit_message_text("❌ Bu fasl endi topilmadi.")
-        await query.message.reply_text("👑 Admin paneli:", reply_markup=admin_menu_keyboard(update.effective_user.id))
-        return ConversationHandler.END
-    _, anime_code, season_num, *_rest = season
-    delete_season(season_id)
-    await query.edit_message_text(f"✅ *{season_num}-fasl* o'chirildi!", parse_mode="Markdown")
-    await query.message.reply_text("👑 Admin paneli:", reply_markup=admin_menu_keyboard(update.effective_user.id))
-    return ConversationHandler.END
 
 async def got_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2515,59 +2430,14 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     animes_this_month, users, total_animes, total_episodes = get_monthly_stats()
     month = datetime.now().strftime("%B %Y")
-    text = (
+    await update.message.reply_text(
         f"📊 *Statistika — {month}*\n\n"
         f"👥 Jami foydalanuvchilar: {users}\n"
         f"🎬 Jami animeler: {total_animes}\n"
         f"📺 Jami qismlar: {total_episodes}\n"
-        f"➕ Bu oy qo'shilgan: {animes_this_month} ta anime\n"
+        f"➕ Bu oy qo'shilgan: {animes_this_month} ta anime",
+        parse_mode="Markdown"
     )
-
-    # 🔥 Eng faol kun
-    most_active = get_most_active_day()
-    if most_active and most_active[0]:
-        raw_date, cnt = most_active
-        try:
-            d = datetime.strptime(raw_date, "%Y-%m-%d")
-            date_fmt = f"{d.day}-{d.strftime('%B')}"
-        except ValueError:
-            date_fmt = raw_date
-        text += f"\n🔥 *Eng faol kun:* {date_fmt} — {cnt} ta faollik\n"
-    else:
-        text += "\n🔥 *Eng faol kun:* hali ma'lumot yo'q\n"
-
-    # 👤 Eng faol foydalanuvchilar TOP 10
-    top_users = get_top_active_users(10)
-    if top_users:
-        medals = ["🥇", "🥈", "🥉"]
-        lines = []
-        for i, (uid, cnt, username, first_name) in enumerate(top_users):
-            if username:
-                label = f"@{_esc_md(username)}"
-            elif first_name:
-                label = _esc_md(first_name)
-            else:
-                label = f"`{uid}`"
-            rank = medals[i] if i < 3 else f"{i + 1}."
-            lines.append(f"{rank} {label} — {cnt} ta")
-        text += "\n👤 *Eng faol foydalanuvchilar TOP 10:*\n" + "\n".join(lines) + "\n"
-    else:
-        text += "\n👤 *Eng faol foydalanuvchilar:* hali ma'lumot yo'q\n"
-
-    # 🎬 Eng ko'p so'ralgan animelar TOP 10
-    top_animes = get_top_requested_animes(10)
-    if top_animes:
-        medals = ["🥇", "🥈", "🥉"]
-        lines = []
-        for i, (code, cnt, name) in enumerate(top_animes):
-            display = _esc_md(name) if name else f"kod {code}"
-            rank = medals[i] if i < 3 else f"{i + 1}."
-            lines.append(f"{rank} {display} — {cnt} ta so'rov")
-        text += "\n🎬 *Eng ko'p so'ralgan animelar TOP 10:*\n" + "\n".join(lines)
-    else:
-        text += "\n🎬 *Eng ko'p so'ralgan animelar:* hali ma'lumot yo'q"
-
-    await update.message.reply_text(text, parse_mode="Markdown")
 
 # -- BROADCAST --
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3406,11 +3276,7 @@ def main():
         entry_points=[MessageHandler(filters.Regex("^🗑 Anime O'chirish$"), delete_anime_start)],
         states={
             WAIT_DELETE_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_delete_code)],
-            WAIT_DELETE_CONFIRM: [
-                CallbackQueryHandler(got_delete_confirm, pattern="^delconfirm_(yes|no)$"),
-                CallbackQueryHandler(delete_season_confirm_callback, pattern="^delseasonyes_"),
-                CallbackQueryHandler(delete_season_ask_callback, pattern="^delseason_\\d"),
-            ],
+            WAIT_DELETE_CONFIRM: [CallbackQueryHandler(got_delete_confirm, pattern="^delconfirm_(yes|no)$")],
         },
         fallbacks=_esc,
         per_message=False,
@@ -3465,17 +3331,13 @@ def main():
     app.add_handler(CallbackQueryHandler(chsel_callback, pattern="^chsel_"))
     app.add_handler(CallbackQueryHandler(chsend_callback, pattern="^chsend_"))
     app.add_handler(CallbackQueryHandler(admin_manage_callback, pattern="^(add_admin|rmadmin_.+)$"))
+    app.add_handler(CallbackQueryHandler(admin_new_episode_image_choice, pattern="^annepimg_"))
     app.add_handler(CallbackQueryHandler(admin_new_episode_channel_send, pattern="^annep_"))
     app.add_handler(CallbackQueryHandler(show_season_callback, pattern="^showseason_"))
     # Restore callbacks must be registered before the catch-all episode handler.
     # Otherwise "restore_confirm"/"restore_cancel" are swallowed silently.
     app.add_handler(CallbackQueryHandler(restore_confirm_callback, pattern="^restore_(confirm|cancel)$"))
     app.add_handler(CallbackQueryHandler(episode_callback))
-
-    # Foydalanuvchi faolligini kuzatish uchun umumiy loglagich — eng erta guruhda ishlaydi,
-    # lekin update oqimini to'xtatmagani uchun boshqa handlerlarga xalaqit bermaydi.
-    app.add_handler(MessageHandler(filters.ALL, log_user_activity), group=-2)
-    app.add_handler(CallbackQueryHandler(log_user_activity), group=-2)
 
     app.add_handler(MessageHandler(filters.FORWARDED, got_channel_forward), group=-1)
     app.add_handler(ChatJoinRequestHandler(record_join_request))
