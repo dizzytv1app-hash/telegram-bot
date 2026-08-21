@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "8815297627:AAF0RlqxtaryeEm2k0L-Rj0fVTlV5N525Fw"
+BOT_TOKEN = "8815297627:AAG1NmFUaPD0ei8Zqcc_YtWMM2psUhV1JSY"
 ADMIN_ID = 6222096713
 ADMIN_USERNAME = "@Reyimberganov_i"
 ADMIN_CONTACT_URL = f"https://t.me/{ADMIN_USERNAME.lstrip('@')}"
